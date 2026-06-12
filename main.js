@@ -87,14 +87,33 @@ const runBatch = async (batchCount) => {
         throw new Error("BATCH COUNT MUST BE A POSITIVE INTEGER")
     }
 
+    let paymentCount = 0;
+    let tokenRefresh = null;
     const batches = Array.from({ length: batchCount }, () => []);
     global.paymentList.forEach((payment, index) => {
         batches[index % batchCount].push(payment)
     })
 
-    const requestStreams = batches.map(async (batch) => {
-        for (const payment of batch) {
-            await screenPayment(payment)
+    const requestStreams = batches.map(async (batch, batchIndex) => {
+        for (let paymentIndex = 0; paymentIndex < batch.length; paymentIndex++) {
+            paymentCount++;
+
+            if (paymentCount > 1 && (paymentCount - 1) % 100 === 0) {
+                console.log(`Refreshing token after ${paymentCount - 1} payments`)
+                tokenRefresh = getToken().finally(() => {
+                    tokenRefresh = null
+                })
+            }
+
+            if (tokenRefresh) {
+                await tokenRefresh
+            }
+
+            console.log(
+                `[Batch ${batchIndex + 1}/${batchCount}] ` +
+                `Payment ${paymentIndex + 1}/${batch.length} is running`
+            )
+            await screenPayment(batch[paymentIndex])
         }
     })
 
