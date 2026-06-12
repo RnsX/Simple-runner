@@ -57,7 +57,7 @@ const getToken = async () => {
     if(!response.ok) {
         throw new Error(`TOKEN REQUEST ERROR: ${response.status}:${response.statusText}`)
     }
-    const tokenData = response.json()
+    const tokenData = await response.json()
     global.tokenValue = tokenData.access_token;
 }
 
@@ -82,15 +82,33 @@ const screenPayment = async (paymentRaw) => {
     console.log(result)
 }
 
-const run = async () => {
-    await readCsv()
-    await getToken()
-
-    for(let i = 0; i < global.paymentList.length; i++) {
-        await screenPayment(global.paymentList[i])
+const runBatch = async (batchCount) => {
+    if (!Number.isInteger(batchCount) || batchCount < 1) {
+        throw new Error("BATCH COUNT MUST BE A POSITIVE INTEGER")
     }
+
+    const batches = Array.from({ length: batchCount }, () => []);
+    global.paymentList.forEach((payment, index) => {
+        batches[index % batchCount].push(payment)
+    })
+
+    const requestStreams = batches.map(async (batch) => {
+        for (const payment of batch) {
+            await screenPayment(payment)
+        }
+    })
+
+    await Promise.all(requestStreams)
 }
 
-run().catch((error) => {
+const run = async (batchCount) => {
+    await readCsv()
+    await getToken()
+    await runBatch(batchCount)
+}
+
+const batchCount = Number(process.argv[2] ?? 1);
+
+run(batchCount).catch((error) => {
     console.error('ERROR WHILE PROCESSING:',error)
 })
