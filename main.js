@@ -14,16 +14,37 @@ const config = {
 
 let global = {
     tokenValue: "",
-    paymentList: [] // string list
+    paymentList: [] // { base64, msgId } list
 }
 
+const parseCsvRow = (row) => {
+    const values = [];
+    let value = "";
+    let quoted = false;
 
+    for (let i = 0; i < row.length; i++) {
+        const char = row[i];
+
+        if (char === '"') {
+            if (quoted && row[i + 1] === '"') {
+                value += '"';
+                i++;
+            } else {
+                quoted = !quoted;
+            }
+        } else if (char === "," && !quoted) {
+            values.push(value);
+            value = "";
+        } else {
+            value += char;
+        }
+    }
+
+    values.push(value);
+    return values;
+}
 
 const readCsv = async () => {
-    // CSV schema = single column, each row = base64 encoded raw payment message (xml)
-    // load from csv
-    // decode from base64
-    // store in global.paymentList
     if (!config.csvFileName) {
         throw new Error("CSV FILE NAME IS NOT SET")
     }
@@ -32,12 +53,31 @@ const readCsv = async () => {
     const csvFilePath = path.resolve(csvDir, config.csvFileName);
     const csvContent = await fs.readFile(csvFilePath, "utf8");
 
-    global.paymentList = csvContent
+    const rows = csvContent
         .replace(/^\uFEFF/, "")
         .split(/\r?\n/)
-        .map((row) => row.trim())
-        .filter((row) => row.length > 0)
-        .map((row) => Buffer.from(row, "base64").toString("utf8"));
+        .filter((row) => row.trim().length > 0);
+
+    if (rows.length === 0) {
+        global.paymentList = [];
+        return;
+    }
+
+    const headers = parseCsvRow(rows[0]).map((header) => header.trim());
+    const paymentBase64Index = headers.indexOf("payment_base64");
+    const messageIdIndex = headers.indexOf("message_id");
+
+    if (paymentBase64Index === -1 || messageIdIndex === -1) {
+        throw new Error('CSV MUST CONTAIN "payment_base64" AND "message_id" COLUMNS');
+    }
+
+    global.paymentList = rows.slice(1).map((row) => {
+        const values = parseCsvRow(row);
+        return {
+            base64: values[paymentBase64Index],
+            msgId: values[messageIdIndex]
+        };
+    });
 }
 
 const getToken = async () => {
@@ -57,7 +97,7 @@ const getToken = async () => {
     if(!response.ok) {
         throw new Error(`TOKEN REQUEST ERROR: ${response.status}:${response.statusText}`)
     }
-    const tokenData = await response.json()
+    const tokenData = response.json()
     global.tokenValue = tokenData.access_token;
 }
 
@@ -82,52 +122,16 @@ const screenPayment = async (paymentRaw) => {
     console.log(result)
 }
 
-const runBatch = async (batchCount) => {
-    if (!Number.isInteger(batchCount) || batchCount < 1) {
-        throw new Error("BATCH COUNT MUST BE A POSITIVE INTEGER")
-    }
-
-    let paymentCount = 0;
-    let tokenRefresh = null;
-    const batches = Array.from({ length: batchCount }, () => []);
-    global.paymentList.forEach((payment, index) => {
-        batches[index % batchCount].push(payment)
-    })
-
-    const requestStreams = batches.map(async (batch, batchIndex) => {
-        for (let paymentIndex = 0; paymentIndex < batch.length; paymentIndex++) {
-            paymentCount++;
-
-            if (paymentCount > 1 && (paymentCount - 1) % 100 === 0) {
-                console.log(`Refreshing token after ${paymentCount - 1} payments`)
-                tokenRefresh = getToken().finally(() => {
-                    tokenRefresh = null
-                })
-            }
-
-            if (tokenRefresh) {
-                await tokenRefresh
-            }
-
-            console.log(
-                `[Batch ${batchIndex + 1}/${batchCount}] ` +
-                `Payment ${paymentIndex + 1}/${batch.length} is running`
-            )
-            await screenPayment(batch[paymentIndex])
-        }
-    })
-
-    await Promise.all(requestStreams)
-}
-
-const run = async (batchCount) => {
+const run = async () => {
     await readCsv()
     await getToken()
-    await runBatch(batchCount)
+
+    for(let i = 0; i < global.paymentList.length; i++) {
+        const paymentRaw = Buffer.from(global.paymentList[i].base64, "base64").toString("utf8");
+        await screenPayment(paymentRaw)
+    }
 }
 
-const batchCount = Number(process.argv[2] ?? 1);
-
-run(batchCount).catch((error) => {
+run().catch((error) => {
     console.error('ERROR WHILE PROCESSING:',error)
 })
